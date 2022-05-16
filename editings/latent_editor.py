@@ -40,6 +40,6 @@ class LatentEditor(object):
             images, _ = self.generator([latents], randomize_noise=False, input_is_latent=True)
             if self.is_cars:
                 images = images[:, :, 64:448, :]  # 512x512 -> 384x512
-        horizontal_concat_image = torch.cat(list(images), 2)
-        final_image = tensor2im(horizontal_concat_image)
-        return final_image
+        # horizontal_concat_image = torch.cat(list(images), 2)
+        # final_image = tensor2im(horizontal_concat_image)
+        return images

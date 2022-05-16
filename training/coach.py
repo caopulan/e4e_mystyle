@@ -32,7 +32,7 @@ class Coach:
 
         self.global_step = 0
 
-        self.device = 'cuda:0'
+        self.device = 'cuda'
         self.opts.device = self.device
         # Initialize network
         self.net = pSp(self.opts).to(self.device)
@@ -41,7 +41,7 @@ class Coach:
         if self.opts.lpips_lambda > 0:
             self.lpips_loss = LPIPS(net_type=self.opts.lpips_type).to(self.device).eval()
         if self.opts.id_lambda > 0:
-            if 'ffhq' in self.opts.dataset_type or 'celeb' in self.opts.dataset_type:
+            if 'ffhq' in self.opts.dataset_type or 'celeb' in self.opts.dataset_type or 'PMT' in opts.dataset_type:
                 self.id_loss = id_loss.IDLoss().to(self.device).eval()
             else:
                 self.id_loss = moco_loss.MocoLoss(opts).to(self.device).eval()
@@ -119,8 +119,7 @@ class Coach:
                 self.optimizer.step()
 
                 # Logging related
-                if self.global_step % self.opts.image_interval == 0 or (
-                        self.global_step < 1000 and self.global_step % 25 == 0):
+                if self.global_step % self.opts.image_interval == 0:
                     self.parse_and_log_images(id_logs, x, y, y_hat, title='images/train/faces')
                 if self.global_step % self.opts.board_interval == 0:
                     self.print_metrics(loss_dict, prefix='train')
@@ -313,9 +312,9 @@ class Coach:
         if log_latest:
             step = 0
         if subscript:
-            path = os.path.join(self.logger.log_dir, name, '{}_{:04d}.jpg'.format(subscript, step))
+            path = os.path.join(self.logger.log_dir, name, '{}_{:06d}.jpg'.format(subscript, step))
         else:
-            path = os.path.join(self.logger.log_dir, name, '{:04d}.jpg'.format(step))
+            path = os.path.join(self.logger.log_dir, name, '{:06d}.jpg'.format(step))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fig.savefig(path)
         plt.close(fig)

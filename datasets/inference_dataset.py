@@ -1,3 +1,5 @@
+import os
+
 from torch.utils.data import Dataset
 from PIL import Image
 from utils import data_utils
@@ -6,7 +8,12 @@ from utils import data_utils
 class InferenceDataset(Dataset):
 
 	def __init__(self, root, opts, transform=None, preprocess=None):
-		self.paths = sorted(data_utils.make_dataset(root))
+		if 'txt' in root:
+			f = open(root, mode='r')
+			self.paths = sorted([line.strip().split(' ')[0][1:] for line in f.readlines()])
+			f.close()
+		else:
+			self.paths = sorted(data_utils.make_dataset(root))
 		self.transform = transform
 		self.preprocess = preprocess
 		self.opts = opts
@@ -22,4 +29,4 @@ class InferenceDataset(Dataset):
 			from_im = Image.open(from_path).convert('RGB')
 		if self.transform:
 			from_im = self.transform(from_im)
-		return from_im
+		return from_im, from_path.split('/')[-2] + '_' + os.path.basename(from_path)

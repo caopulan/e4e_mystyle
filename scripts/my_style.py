@@ -1,22 +1,19 @@
 import argparse
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import sys
 import os
 import dlib
-import torch.nn.functional as F
 
-sys.path.append(".")
-sys.path.append("..")
+sys.path.append("pretrained_models")
+sys.path.append("")
 
-
-from criteria import id_loss
-from criteria.lpips.lpips import LPIPS
-from utils import train_utils
-from editings import latent_editor
 from configs import data_configs, paths_config
 from datasets.inference_dataset import InferenceDataset
+from criteria.lpips.lpips import LPIPS
+from training.ranger import Ranger
 from torch.utils.data import DataLoader
 from utils.model_utils import setup_model
 from utils.common import tensor2im
@@ -26,82 +23,48 @@ from PIL import Image
 
 def main(args):
     net, opts = setup_model(args.ckpt, device)
-    is_cars = 'car' in opts.dataset_type
+    is_cars = 'cars_' in opts.dataset_type
     generator = net.decoder
-    generator.eval()
     args, data_loader = setup_data_loader(args, opts)
-    editor = latent_editor.LatentEditor(net.decoder, is_cars)
 
-    # initial inversion
-    latent_codes, names = get_all_latents(net, data_loader, args.n_sample, is_cars=is_cars)
-    dic = {names[i]: latent_codes[i] for i in range(len(names))}
+    os.makedirs(args.save_dir, exist_ok=True)
+    latents_file_path = os.path.join(args.save_dir, 'latents.pt')
+    g_file_path = os.path.join(args.save_dir, 'g.pt')
 
-    # set the editing operation
-    if args.edit_attribute == 'inversion':
-        edit_directory_path = os.path.join(args.save_dir, args.edit_attribute)
-        os.makedirs(edit_directory_path, exist_ok=True)
+    lpips_loss = LPIPS(net_type='alex').to(device).eval()
+    optimizer = Ranger(generator.parameters(), lr=1e-4)
 
-        f = open(os.path.join(edit_directory_path, 'timestamp.txt'), 'a')
-        id_l = id_loss.IDLoss().to(device).eval()
-        lpips_l = LPIPS(net_type='alex').to(device).eval()
-        agg_loss_dict = []
-
-        torch.save(dic, os.path.join(edit_directory_path, 'latent.pt'))
-    elif args.edit_attribute == 'age' or args.edit_attribute == 'smile' or 'makeup' in args.edit_attribute:
-        interfacegan_directions = {
-            'age': './editings/interfacegan_directions/age.pt',
-            'smile': './editings/interfacegan_directions/smile.pt',
-            'makeup1': './editings/interfacegan_directions/makeup1.pt'
-        }
-        edit_directory_path = os.path.join(args.save_dir, f'{args.edit_attribute}_{args.edit_degree}')
-        os.makedirs(edit_directory_path, exist_ok=True)
-        edit_direction = torch.load(f'./editings/interfacegan_directions/align/{args.edit_attribute}.pt').to(device)
-    else:
-        ganspace_pca = torch.load('./editings/ganspace_pca/ffhq_pca.pt')
-        ganspace_directions = {
-            'eyes': (54, 7, 8, 20),
-            'beard': (58, 7, 9, -20),
-            'lip': (34, 10, 11, 20)}
-        edit_direction = ganspace_directions[args.edit_attribute]
-
-    # perform high-fidelity inversion or editing
-    with torch.no_grad():
-        for i, (batch, name) in enumerate(data_loader):
-            if args.n_sample is not None and i > args.n_sample:
-                print('inference finished!')
+    for epoch in range(args.epoch):
+        print('epoch: ', epoch + 1)
+        i = 0
+        for (x, name) in data_loader:
+            if i > args.n_sample:
                 break
-            x = batch.to(device).float()
+            print(i, ' ', name[0])
 
-            # calculate the distortion map
-            imgs, _ = generator([latent_codes[i].unsqueeze(0).to(device)], input_is_latent=True, randomize_noise=False, return_latents=True)
-
-            # produce initial editing image
-            # edit_latents = editor.apply_interfacegan(latent_codes[i].to(device), interfacegan_direction, factor_range=np.linspace(-3, 3, num=40))
-            if args.edit_attribute == 'inversion':
-                img_edit = imgs
-            elif args.edit_attribute == 'age' or args.edit_attribute == 'smile' or 'makeup' in args.edit_attribute:
-                img_edit = editor.apply_interfacegan(latent_codes[i].unsqueeze(0).to(device), edit_direction,
-                                                                   factor=args.edit_degree)
-            else:
-                img_edit = editor.apply_ganspace(latent_codes[i].unsqueeze(0).to(device), ganspace_pca,
-                                                               [edit_direction])
-
-            imgs = img_edit
-            if is_cars:
-                imgs = imgs[:, :, 64:448, :]
-
-            # save images
+            inputs = x.to(device).float()
+            assert inputs.shape == (1, 3, 256, 256)
+            latents = get_latents(net, inputs, is_cars)
+            imgs, _ = generator([latents], input_is_latent=True, randomize_noise=False, return_latents=True)
             imgs = torch.nn.functional.interpolate(imgs, size=(256, 256), mode='bilinear')
-            if args.edit_attribute == 'inversion':
-                loss_dict = cal_loss(id_l, lpips_l, x, x, imgs)
-                f.write('name - {}\n{}\n'.format(name, loss_dict))
-                agg_loss_dict.append(loss_dict)
+            loss_l2 = F.mse_loss(imgs, inputs)
+            loss_lpips = lpips_loss(imgs, inputs)
+            loss = loss_lpips * 0.8 + loss_l2
 
-            save_image(imgs[0], edit_directory_path, f"{name[0]}")
-    if args.edit_attribute == 'inversion':
-        loss_dict = train_utils.aggregate_loss_dict(agg_loss_dict)
-        f.write('total\n{}\n'.format(loss_dict))
-        f.close()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            print('loss = ', loss)
+            i += len(latents)
+    print('end')
+    net.decoder = generator
+    names, latent_codes = get_all_latents(net, data_loader, is_cars=False)
+    torch.save(latent_codes, latents_file_path)
+    torch.save(generator.state_dict(), g_file_path)
+
+    if not args.latents_only:
+        generate_inversions(args, generator, latent_codes, names, is_cars=is_cars)
 
 
 def setup_data_loader(args, opts):
@@ -156,7 +119,7 @@ def get_all_latents(net, data_loader, n_images=None, is_cars=False):
             names.append(name[0])
             i += len(latents)
     print('end')
-    return torch.cat(all_latents), names
+    return names, torch.cat(all_latents)
 
 
 def save_image(img, save_dir, name):
@@ -176,20 +139,6 @@ def generate_inversions(args, g, latent_codes, names, is_cars):
         if is_cars:
             imgs = imgs[:, :, 64:448, :]
         save_image(imgs[0], inversions_directory_path, names[i])
-
-
-def cal_loss(id_l, lpips_l, x, y, y_hat):
-    loss_dict = {}
-
-    loss_id, _, _ = id_l(y_hat, y, x)
-    loss_dict['loss_id'] = float(loss_id)
-
-    loss_l2 = F.mse_loss(y_hat, y)
-    loss_dict['loss_l2'] = float(loss_l2)
-
-    loss_lpips = lpips_l(y_hat, y)
-    loss_dict['loss_lpips'] = float(loss_lpips)
-    return loss_dict
 
 
 def run_alignment(image_path):
@@ -212,8 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--latents_only", action="store_true", help="infer only the latent codes of the directory")
     parser.add_argument("--align", action="store_true", help="align face images before inference")
     parser.add_argument("--ckpt", metavar="CHECKPOINT", help="path to generator checkpoint")
-    parser.add_argument("--edit_attribute", default='inversion', type=str, help="path to generator checkpoint")
-    parser.add_argument("--edit_degree", type=float, default=0, help="edit degree")
+    parser.add_argument("--epoch", default=50, type=int, help="path to generator checkpoint")
 
     args = parser.parse_args()
     main(args)

@@ -47,7 +47,7 @@ def load_train_checkpoint(opts):
 
 def setup_progressive_steps(opts):
 	log_size = int(math.log(opts.stylegan_size, 2))
-	num_style_layers = 2*log_size - 2
+	num_style_layers = 2 * log_size - 2
 	num_deltas = num_style_layers - 1
 	if opts.progressive_start is not None:  # If progressive delta training
 		opts.progressive_steps = [0]
@@ -65,9 +65,7 @@ def is_valid_progressive_steps(opts, num_style_layers):
 
 
 def create_initial_experiment_dir(opts):
-	if os.path.exists(opts.exp_dir):
-		raise Exception('Oops... {} already exists'.format(opts.exp_dir))
-	os.makedirs(opts.exp_dir)
+	os.makedirs(opts.exp_dir, exist_ok=True)
 
 	opts_dict = vars(opts)
 	pprint.pprint(opts_dict)
